@@ -167,12 +167,17 @@ def register_tools(
         if isinstance(client, dict):
             return client
 
-        return client.send_message(
-            chat_id=chat_id,
-            text=text,
-            parse_mode=parse_mode if parse_mode else None,
-            disable_notification=disable_notification,
-        )
+        try:
+            return client.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode=parse_mode if parse_mode else None,
+                disable_notification=disable_notification,
+            )
+        except httpx.TimeoutException:
+            return {"error": "Telegram request timed out"}
+        except httpx.RequestError as e:
+            return {"error": f"Network error: {e}"}
 
     @mcp.tool()
     def telegram_send_document(
@@ -200,9 +205,14 @@ def register_tools(
         if isinstance(client, dict):
             return client
 
-        return client.send_document(
-            chat_id=chat_id,
-            document=document,
-            caption=caption if caption else None,
-            parse_mode=parse_mode if parse_mode else None,
-        )
+        try:
+            return client.send_document(
+                chat_id=chat_id,
+                document=document,
+                caption=caption if caption else None,
+                parse_mode=parse_mode if parse_mode else None,
+            )
+        except httpx.TimeoutException:
+            return {"error": "Telegram request timed out"}
+        except httpx.RequestError as e:
+            return {"error": f"Network error: {e}"}

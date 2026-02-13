@@ -232,6 +232,40 @@ class TestErrorHandling:
         with pytest.raises(httpx.TimeoutException):
             self.client.send_message(chat_id="123", text="test")
 
+    @patch("aden_tools.tools.telegram_tool.telegram_tool.httpx.post")
+    @patch("os.getenv", return_value="test_token")
+    def test_tool_returns_error_on_timeout(self, mock_getenv, mock_post):
+        """MCP tool should return error dict on timeout, not raise."""
+        import httpx
+
+        mock_post.side_effect = httpx.TimeoutException("Request timed out")
+
+        mcp = FastMCP("test-telegram")
+        register_tools(mcp, credentials=None)
+        tools = {t.name: t for t in mcp._tool_manager._tools.values()}
+
+        result = tools["telegram_send_message"].fn(chat_id="123", text="test")
+
+        assert "error" in result
+        assert "timed out" in result["error"].lower()
+
+    @patch("aden_tools.tools.telegram_tool.telegram_tool.httpx.post")
+    @patch("os.getenv", return_value="test_token")
+    def test_tool_returns_error_on_network_failure(self, mock_getenv, mock_post):
+        """MCP tool should return error dict on network error, not raise."""
+        import httpx
+
+        mock_post.side_effect = httpx.ConnectError("Connection failed")
+
+        mcp = FastMCP("test-telegram")
+        register_tools(mcp, credentials=None)
+        tools = {t.name: t for t in mcp._tool_manager._tools.values()}
+
+        result = tools["telegram_send_message"].fn(chat_id="123", text="test")
+
+        assert "error" in result
+        assert "network" in result["error"].lower() or "connection" in result["error"].lower()
+
     def test_handle_response_generic_error(self):
         response = MagicMock()
         response.status_code = 500
