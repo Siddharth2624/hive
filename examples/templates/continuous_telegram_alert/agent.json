@@ -1,0 +1,16 @@
+{
+  "id": "continuous-telegram-alert",
+  "name": "Continuous Telegram Alert",
+  "version": "1.0.0",
+  "entry_node": "observe",
+  "nodes": [
+    {
+      "id": "observe",
+      "type": "function"
+    },
+    {
+      "id": "notify",
+      "type": "function"
+    }
+  ]
+}
