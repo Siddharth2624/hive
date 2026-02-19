@@ -1,7 +1,10 @@
 from framework.graph.node import NodeSpec
 
+
 async def stop_handler(**kwargs):
     print("Stopping agent...")
+    return {"done": True}
+
 
 stop_node = NodeSpec(
     id="stop",
@@ -12,4 +15,5 @@ stop_node = NodeSpec(
     execution_type="function",
     function_name="stop_handler",
     handler=stop_handler,
+    max_node_visits=0,  # 0 = unlimited, so it always executes when reached
 )

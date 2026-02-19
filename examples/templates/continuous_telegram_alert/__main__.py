@@ -9,8 +9,11 @@ async def main():
     agent = ContinuousTelegramAlertAgent()
 
     # Minimal test context
-    context = {"context": {"iteration": 0}}
-
+    context = {
+        "context": {
+            "iteration": 0
+        }
+    }
     result = await agent.run(context)
     print("Execution result:", result)
 

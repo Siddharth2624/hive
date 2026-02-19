@@ -1,11 +1,18 @@
 from framework.graph.node import NodeSpec
 
+
 async def observe_handler(**kwargs):
-    iteration = kwargs.get("iteration", 0)
-    if iteration >= 5:
-        return {"done": True, "iteration": iteration}
+    # Read iteration from previous result (stored as top-level "result" key)
+    prev = kwargs.get("result", {})
+    iteration = prev.get("iteration", 0) if isinstance(prev, dict) else 0
+
     print("Observing signal...")
-    return {"done": False, "iteration": iteration + 1}
+    new_iteration = iteration + 1
+    return {
+        "iteration": new_iteration,
+        "halt": new_iteration >= 5,
+    }
+
 
 observe_node = NodeSpec(
     id="observe",
@@ -16,5 +23,6 @@ observe_node = NodeSpec(
     execution_type="function",
     function_name="observe_handler",
     handler=observe_handler,
-    max_visits=5,  # Retaining max_visits as it may be relevant
+    input_keys=["result"],
+    max_node_visits=5,
 )

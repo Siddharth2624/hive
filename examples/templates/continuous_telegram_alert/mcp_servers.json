@@ -1,7 +1,0 @@
-{
-  "telegram": {
-    "transport": "stdio",
-    "type": "python",
-    "module": "aden_tools.tools.telegram_tool.telegram_tool"
-  }
-}
