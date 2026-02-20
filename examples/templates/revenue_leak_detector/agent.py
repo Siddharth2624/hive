@@ -2,20 +2,19 @@
 
 Graph topology
 --------------
-  monitor ──► analyze ──► notify
-                              │
-              ◄───────────────┘  (loop while halt != true)
+  monitor ──► analyze ──► notify ──► followup
+                                           │
+              ◄───────────────────────────┘  (loop while halt != true)
 
-The agent runs 3 monitoring cycles. Severity escalates each cycle:
-  Cycle 1 → medium   (ghosted prospect + stalled deal)
-  Cycle 2 → high     (more ghosting + overdue invoice)
-  Cycle 3 → critical (multiple GHOSTED + CHURN_RISK) → halt
+The agent runs until severity hits critical. Observed escalation:
+  Cycle 1 → high     (GHOSTED Epsilon $18k + STALLED Gamma $25k → $43k at risk)
+  Cycle 2 → critical ($62k at risk threshold crossed) → halt
 """
 
 from framework.graph import EdgeSpec, EdgeCondition, Goal
 
 from .config import default_config, metadata
-from .nodes import monitor_node, analyze_node, notify_node
+from .nodes import monitor_node, analyze_node, notify_node, followup_node
 
 # ---- Goal ----
 goal = Goal(
@@ -30,7 +29,7 @@ goal = Goal(
 )
 
 # ---- Nodes ----
-nodes = [monitor_node, analyze_node, notify_node]
+nodes = [monitor_node, analyze_node, notify_node, followup_node]
 
 # ---- Edges ----
 edges = [
@@ -50,10 +49,18 @@ edges = [
         condition=EdgeCondition.ON_SUCCESS,
         priority=1,
     ),
-    # notify → monitor (loop back while not halted)
+    # notify → followup (always send follow-up emails after alerting)
     EdgeSpec(
-        id="notify-to-monitor",
+        id="notify-to-followup",
         source="notify",
+        target="followup",
+        condition=EdgeCondition.ON_SUCCESS,
+        priority=1,
+    ),
+    # followup → monitor (loop back while not halted)
+    EdgeSpec(
+        id="followup-to-monitor",
+        source="followup",
         target="monitor",
         condition=EdgeCondition.CONDITIONAL,
         condition_expr='halt != "true" and halt != True',

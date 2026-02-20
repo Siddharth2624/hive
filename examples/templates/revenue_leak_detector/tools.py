@@ -40,21 +40,21 @@ def tool(func):
 _PIPELINE_DB: dict = {
     1: {
         "deals": [
-            {"id": "DEAL-001", "contact": "Acme Corp",     "stage": "Proposal Sent",  "days_inactive": 7,  "value": 12000},
-            {"id": "DEAL-002", "contact": "Beta Ltd",      "stage": "Demo Scheduled", "days_inactive": 2,  "value": 8500},
-            {"id": "DEAL-003", "contact": "Gamma Inc",     "stage": "Negotiation",    "days_inactive": 14, "value": 25000},
-            {"id": "DEAL-004", "contact": "Delta Co",      "stage": "Proposal Sent",  "days_inactive": 5,  "value": 5000},
-            {"id": "DEAL-005", "contact": "Epsilon LLC",   "stage": "Follow-up",      "days_inactive": 21, "value": 18000},
+            {"id": "DEAL-001", "contact": "Acme Corp",     "email": "deals@acmecorp.com",        "stage": "Proposal Sent",  "days_inactive": 7,  "value": 12000},
+            {"id": "DEAL-002", "contact": "Beta Ltd",      "email": "hello@betaltd.io",          "stage": "Demo Scheduled", "days_inactive": 2,  "value": 8500},
+            {"id": "DEAL-003", "contact": "Gamma Inc",     "email": "partners@gammainc.com",     "stage": "Negotiation",    "days_inactive": 14, "value": 25000},
+            {"id": "DEAL-004", "contact": "Delta Co",      "email": "sales@deltaco.net",         "stage": "Proposal Sent",  "days_inactive": 5,  "value": 5000},
+            {"id": "DEAL-005", "contact": "Epsilon LLC",   "email": "contact@epsilonllc.com",    "stage": "Follow-up",      "days_inactive": 21, "value": 18000},
         ],
         "overdue_payments": [],
         "support_escalations": 0,
     },
     2: {
         "deals": [
-            {"id": "DEAL-001", "contact": "Acme Corp",     "stage": "Proposal Sent",  "days_inactive": 12, "value": 12000},
-            {"id": "DEAL-003", "contact": "Gamma Inc",     "stage": "Negotiation",    "days_inactive": 19, "value": 25000},
-            {"id": "DEAL-005", "contact": "Epsilon LLC",   "stage": "Follow-up",      "days_inactive": 26, "value": 18000},
-            {"id": "DEAL-006", "contact": "Zeta Partners", "stage": "Closed Won",     "days_inactive": 0,  "value": 31000},
+            {"id": "DEAL-001", "contact": "Acme Corp",     "email": "deals@acmecorp.com",        "stage": "Proposal Sent",  "days_inactive": 12, "value": 12000},
+            {"id": "DEAL-003", "contact": "Gamma Inc",     "email": "partners@gammainc.com",     "stage": "Negotiation",    "days_inactive": 19, "value": 25000},
+            {"id": "DEAL-005", "contact": "Epsilon LLC",   "email": "contact@epsilonllc.com",    "stage": "Follow-up",      "days_inactive": 26, "value": 18000},
+            {"id": "DEAL-006", "contact": "Zeta Partners", "email": "info@zetapartners.com",      "stage": "Closed Won",     "days_inactive": 0,  "value": 31000},
         ],
         "overdue_payments": [
             {"id": "INV-2024-089", "client": "Eta Systems", "amount": 7200, "days_overdue": 18},
@@ -63,10 +63,10 @@ _PIPELINE_DB: dict = {
     },
     3: {
         "deals": [
-            {"id": "DEAL-001", "contact": "Acme Corp",     "stage": "Proposal Sent",  "days_inactive": 19, "value": 12000},
-            {"id": "DEAL-003", "contact": "Gamma Inc",     "stage": "Negotiation",    "days_inactive": 26, "value": 25000},
-            {"id": "DEAL-005", "contact": "Epsilon LLC",   "stage": "Ghosted",        "days_inactive": 33, "value": 18000},
-            {"id": "DEAL-007", "contact": "Theta Ventures","stage": "Proposal Sent",  "days_inactive": 11, "value": 9500},
+            {"id": "DEAL-001", "contact": "Acme Corp",     "email": "deals@acmecorp.com",        "stage": "Proposal Sent",  "days_inactive": 19, "value": 12000},
+            {"id": "DEAL-003", "contact": "Gamma Inc",     "email": "partners@gammainc.com",     "stage": "Negotiation",    "days_inactive": 26, "value": 25000},
+            {"id": "DEAL-005", "contact": "Epsilon LLC",   "email": "contact@epsilonllc.com",    "stage": "Ghosted",        "days_inactive": 33, "value": 18000},
+            {"id": "DEAL-007", "contact": "Theta Ventures","email": "bd@thetaventures.co",        "stage": "Proposal Sent",  "days_inactive": 11, "value": 9500},
         ],
         "overdue_payments": [
             {"id": "INV-2024-089", "client": "Eta Systems", "amount": 7200,  "days_overdue": 25},
@@ -79,6 +79,138 @@ _PIPELINE_DB: dict = {
 # Shared in-process state — survives across node calls within the same run
 _CURRENT_CYCLE_DATA: dict = {}
 _CURRENT_LEAKS: list = []
+
+
+# ---------------------------------------------------------------------------
+# HubSpot CRM integration helpers  (optional — falls back to _PIPELINE_DB)
+# ---------------------------------------------------------------------------
+
+def _fetch_hubspot_contact_emails(headers: dict, deal_ids: list) -> dict:
+    """
+    Batch-fetch the primary contact email for each HubSpot deal_id.
+    Returns {deal_id: email}.  Silently ignores any per-deal failures.
+    """
+    result: dict = {}
+    try:
+        import httpx
+        for deal_id in deal_ids[:10]:          # cap at 10 to avoid rate limits
+            r = httpx.get(
+                f"https://api.hubapi.com/crm/v3/objects/deals/{deal_id}/associations/contacts",
+                headers=headers,
+                timeout=10.0,
+            )
+            if r.status_code != 200:
+                continue
+            contact_ids = [x["id"] for x in r.json().get("results", [])]
+            if not contact_ids:
+                continue
+            cr = httpx.get(
+                f"https://api.hubapi.com/crm/v3/objects/contacts/{contact_ids[0]}"
+                "?properties=email,firstname,lastname",
+                headers=headers,
+                timeout=10.0,
+            )
+            if cr.status_code == 200:
+                email = cr.json().get("properties", {}).get("email", "")
+                if email:
+                    result[str(deal_id)] = email
+    except Exception:
+        pass
+    return result
+
+
+def _fetch_hubspot_deals() -> "dict | None":
+    """
+    Pull open deals from HubSpot CRM v3 API and return a pipeline snapshot
+    dict (same shape as _PIPELINE_DB entries), or None when HUBSPOT_API_KEY
+    is absent / the request fails — caller then falls back to _PIPELINE_DB.
+
+    Required env var:
+      HUBSPOT_API_KEY  — Private App token from HubSpot:
+                         Settings → Integrations → Private Apps → Create
+                         (scopes needed: crm.objects.deals.read,
+                                         crm.objects.contacts.read)
+    """
+    api_key = os.getenv("HUBSPOT_API_KEY", "").strip()
+    if not api_key:
+        return None
+
+    try:
+        import httpx
+        from datetime import datetime, timezone
+
+        headers = {"Authorization": f"Bearer {api_key}"}
+        now     = datetime.now(timezone.utc)
+
+        stage_map = {
+            "appointmentscheduled":  "Demo Scheduled",
+            "qualifiedtobuy":        "Qualified",
+            "presentationscheduled": "Proposal Sent",
+            "decisionmakerboughtin": "Negotiation",
+            "contractsent":          "Contract Sent",
+        }
+
+        resp = httpx.get(
+            "https://api.hubapi.com/crm/v3/objects/deals",
+            headers=headers,
+            params={
+                "properties": "dealname,dealstage,amount,hs_lastmodifieddate",
+                "limit": 50,
+            },
+            timeout=15.0,
+        )
+        if resp.status_code != 200:
+            print(f"[HubSpot] API {resp.status_code} — falling back to simulated data")
+            return None
+
+        deals: list = []
+        deal_ids: list = []
+        for item in resp.json().get("results", []):
+            props = item.get("properties", {})
+            stage = props.get("dealstage", "unknown")
+            if stage in ("closedwon", "closedlost"):
+                continue
+
+            days_inactive = 0
+            last_mod = props.get("hs_lastmodifieddate", "")
+            if last_mod:
+                try:
+                    dt = datetime.fromisoformat(last_mod.replace("Z", "+00:00"))
+                    days_inactive = max(0, (now - dt).days)
+                except Exception:
+                    pass
+
+            value = 0
+            try:
+                value = int(float(props.get("amount") or 0))
+            except (ValueError, TypeError):
+                pass
+
+            deals.append({
+                "id":           item["id"],
+                "contact":      props.get("dealname", "Unknown Deal"),
+                "email":        "",
+                "stage":        stage_map.get(stage, stage.replace("_", " ").title()),
+                "days_inactive": days_inactive,
+                "value":        value,
+            })
+            deal_ids.append(item["id"])
+
+        emails = _fetch_hubspot_contact_emails(headers, deal_ids)
+        for deal in deals:
+            deal["email"] = emails.get(str(deal["id"]), "")
+
+        print(f"[HubSpot] Fetched {len(deals)} open deals via API")
+        return {
+            "deals":              deals,
+            "overdue_payments":   [],
+            "support_escalations": 0,
+            "_source":            "hubspot",
+        }
+
+    except Exception as exc:
+        print(f"[HubSpot] Error: {exc} — falling back to simulated data")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -105,11 +237,18 @@ def scan_pipeline(cycle: int) -> dict:
     global _CURRENT_CYCLE_DATA
 
     next_cycle = int(cycle) + 1
-    data = _PIPELINE_DB.get(next_cycle, _PIPELINE_DB[3])
+
+    # Try real HubSpot CRM first; fall back to simulated _PIPELINE_DB
+    hs_data = _fetch_hubspot_deals()
+    if hs_data is not None:
+        data = hs_data
+    else:
+        data = _PIPELINE_DB.get(next_cycle, _PIPELINE_DB[3])
     _CURRENT_CYCLE_DATA = data
 
+    source = data.get("_source", "simulated")
     print(
-        f"\n[scan_pipeline] Cycle {next_cycle} — "
+        f"\n[scan_pipeline] Cycle {next_cycle} [{source}] — "
         f"{len(data['deals'])} deals | "
         f"{len(data['overdue_payments'])} overdue invoices | "
         f"{data['support_escalations']} escalations"
@@ -160,6 +299,7 @@ def detect_revenue_leaks(cycle: int) -> dict:
                 "type": "GHOSTED",
                 "deal_id": deal["id"],
                 "contact": deal["contact"],
+                "email": deal.get("email", ""),
                 "value": deal["value"],
                 "days_inactive": days,
                 "stage": deal["stage"],
@@ -173,6 +313,7 @@ def detect_revenue_leaks(cycle: int) -> dict:
                 "type": "STALLED",
                 "deal_id": deal["id"],
                 "contact": deal["contact"],
+                "email": deal.get("email", ""),
                 "value": deal["value"],
                 "days_inactive": days,
                 "stage": deal["stage"],
@@ -440,4 +581,114 @@ def send_revenue_alert(cycle: int, leak_count: int, severity: str, total_at_risk
         "leaks_reported": int(leak_count),
         "total_at_risk_usd": int(total_at_risk),
         "telegram": tg_result,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Tool 4 — send_followup_emails
+# ---------------------------------------------------------------------------
+
+@tool
+def send_followup_emails(cycle: int) -> dict:
+    """
+    Send re-engagement emails to every GHOSTED contact found this cycle.
+
+    Uses Gmail SMTP when GMAIL_USER + GMAIL_APP_PASSWORD are set; otherwise
+    prints a dry-run preview so the agent runs fully offline.
+
+    How to enable Gmail:
+      1. Enable 2-Step Verification on your Google account.
+      2. Go to myaccount.google.com → Security → App Passwords → generate.
+      3. Export before running:
+           export GMAIL_USER="you@gmail.com"
+           export GMAIL_APP_PASSWORD="xxxx xxxx xxxx xxxx"
+
+    How to get contact emails automatically:
+      Set HUBSPOT_API_KEY — scan_pipeline will fetch real contact emails
+      from HubSpot and they will appear in GHOSTED/STALLED leak records.
+
+    Args:
+        cycle: Current monitoring cycle (for log labels).
+
+    Returns:
+        emails_sent:      number of emails dispatched (or dry-run previewed)
+        contacts_emailed: list of contact names
+        delivery_method:  "gmail" | "console"
+    """
+    ghosted = [l for l in _CURRENT_LEAKS if l.get("type") == "GHOSTED"]
+
+    if not ghosted:
+        print(f"\n[send_followup_emails] Cycle {cycle} — no GHOSTED contacts, skipping.")
+        return {"emails_sent": 0, "contacts_emailed": [], "delivery_method": "none"}
+
+    gmail_user = os.getenv("GMAIL_USER", "").strip()
+    gmail_pass = os.getenv("GMAIL_APP_PASSWORD", "").strip()
+
+    sent:   list[str] = []
+    method: str       = "console"
+    border = "─" * 64
+
+    print(f"\n{border}")
+    print(f"  ✉️   FOLLOWUP EMAILS  ·  Cycle {cycle}")
+    print(f"{border}")
+
+    for leak in ghosted:
+        contact  = leak["contact"]
+        to_email = leak.get("email", "")
+        days     = leak.get("days_inactive", 0)
+        value    = leak.get("value", 0)
+        deal_id  = leak.get("deal_id", "")
+
+        subject = f"Re: {deal_id} — Checking in with {contact}"
+        body = (
+            f"Hi {contact},\n\n"
+            f"I wanted to follow up — it's been {days} days since we last connected "
+            f"and I didn't want our discussion to fall through the cracks.\n\n"
+            f"We believe our solution could deliver real value for your team. "
+            f"Could we find 15 minutes this week to reconnect?\n\n"
+            f"Best regards,\nSales Team\n\n"
+            f"Deal ref: {deal_id}  |  Value: ${value:,}"
+        )
+
+        if gmail_user and gmail_pass and to_email:
+            try:
+                import smtplib
+                from email.mime.multipart import MIMEMultipart
+                from email.mime.text import MIMEText
+
+                msg = MIMEMultipart()
+                msg["From"]    = gmail_user
+                msg["To"]      = to_email
+                msg["Subject"] = subject
+                msg.attach(MIMEText(body, "plain"))
+
+                with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                    server.login(gmail_user, gmail_pass)
+                    server.sendmail(gmail_user, to_email, msg.as_string())
+
+                print(f"  ✅  Sent to {contact} <{to_email}>")
+                method = "gmail"
+            except Exception as exc:
+                print(f"  ⚠️   Gmail failed for {contact}: {exc}")
+                print(f"  📋  [DRY-RUN] To: {to_email}  |  {subject}")
+        else:
+            label = to_email if to_email else "(no email — set HUBSPOT_API_KEY to fetch from CRM)"
+            print(f"  📋  [DRY-RUN] To      : {label}")
+            print(f"       Subject : {subject}")
+            print(f"       Preview : {body[:100].strip()}...")
+
+        sent.append(contact)
+
+    print(f"\n  Total: {len(sent)} followup(s)  |  method={method}")
+    print(f"{border}")
+
+    if not (gmail_user and gmail_pass):
+        print(
+            "  ℹ️   Dry-run mode — set GMAIL_USER + GMAIL_APP_PASSWORD to send real emails."
+        )
+
+    return {
+        "emails_sent":      len(sent),
+        "contacts_emailed": sent,
+        "delivery_method":  method,
     }
