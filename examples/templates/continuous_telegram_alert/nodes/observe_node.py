@@ -1,28 +1,19 @@
-from framework.graph.node import NodeSpec
-
-
-async def observe_handler(**kwargs):
-    # Read iteration from previous result (stored as top-level "result" key)
-    prev = kwargs.get("result", {})
-    iteration = prev.get("iteration", 0) if isinstance(prev, dict) else 0
-
-    print("Observing signal...")
-    new_iteration = iteration + 1
-    return {
-        "iteration": new_iteration,
-        "halt": new_iteration >= 5,
-    }
-
+from framework.graph import NodeSpec
 
 observe_node = NodeSpec(
     id="observe",
     name="Observe",
-    description="Simulate observing a signal.",
+    description="Increment the iteration counter and check halt condition.",
+    node_type="event_loop",
     client_facing=False,
-    node_type="function",
-    execution_type="function",
-    function_name="observe_handler",
-    handler=observe_handler,
-    input_keys=["result"],
-    max_node_visits=5,
+    input_keys=["iteration"],
+    output_keys=["iteration", "halt"],
+    tools=["check_signal"],
+    system_prompt="""\
+You are executing ONE step of a monitoring loop. Follow these steps in order:
+1. Call check_signal EXACTLY ONCE with the current 'iteration' value from context (use 0 if missing).
+2. Call set_output with key "iteration" and the returned new_iteration as a string.
+3. Call set_output with key "halt" and the returned halt as "true" or "false".
+Do NOT call check_signal more than once. Stop immediately after step 3.
+""",
 )

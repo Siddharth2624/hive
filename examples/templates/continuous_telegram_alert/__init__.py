@@ -1,8 +1,7 @@
-from .agent import goal, nodes, edges, node_registry
+from .agent import goal, nodes, edges
 
 __all__ = [
     "goal",
     "nodes",
     "edges",
-    "node_registry",
 ]
