@@ -34,55 +34,13 @@ def tool(func):
 
 
 # ---------------------------------------------------------------------------
-# Simulated CRM / ERP / Support database — one snapshot per monitoring cycle
-# ---------------------------------------------------------------------------
-
-_PIPELINE_DB: dict = {
-    1: {
-        "deals": [
-            {"id": "DEAL-001", "contact": "Acme Corp",     "email": "deals@acmecorp.com",        "stage": "Proposal Sent",  "days_inactive": 7,  "value": 12000},
-            {"id": "DEAL-002", "contact": "Beta Ltd",      "email": "hello@betaltd.io",          "stage": "Demo Scheduled", "days_inactive": 2,  "value": 8500},
-            {"id": "DEAL-003", "contact": "Gamma Inc",     "email": "partners@gammainc.com",     "stage": "Negotiation",    "days_inactive": 14, "value": 25000},
-            {"id": "DEAL-004", "contact": "Delta Co",      "email": "sales@deltaco.net",         "stage": "Proposal Sent",  "days_inactive": 5,  "value": 5000},
-            {"id": "DEAL-005", "contact": "Epsilon LLC",   "email": "contact@epsilonllc.com",    "stage": "Follow-up",      "days_inactive": 21, "value": 18000},
-        ],
-        "overdue_payments": [],
-        "support_escalations": 0,
-    },
-    2: {
-        "deals": [
-            {"id": "DEAL-001", "contact": "Acme Corp",     "email": "deals@acmecorp.com",        "stage": "Proposal Sent",  "days_inactive": 12, "value": 12000},
-            {"id": "DEAL-003", "contact": "Gamma Inc",     "email": "partners@gammainc.com",     "stage": "Negotiation",    "days_inactive": 19, "value": 25000},
-            {"id": "DEAL-005", "contact": "Epsilon LLC",   "email": "contact@epsilonllc.com",    "stage": "Follow-up",      "days_inactive": 26, "value": 18000},
-            {"id": "DEAL-006", "contact": "Zeta Partners", "email": "info@zetapartners.com",      "stage": "Closed Won",     "days_inactive": 0,  "value": 31000},
-        ],
-        "overdue_payments": [
-            {"id": "INV-2024-089", "client": "Eta Systems", "amount": 7200, "days_overdue": 18},
-        ],
-        "support_escalations": 2,
-    },
-    3: {
-        "deals": [
-            {"id": "DEAL-001", "contact": "Acme Corp",     "email": "deals@acmecorp.com",        "stage": "Proposal Sent",  "days_inactive": 19, "value": 12000},
-            {"id": "DEAL-003", "contact": "Gamma Inc",     "email": "partners@gammainc.com",     "stage": "Negotiation",    "days_inactive": 26, "value": 25000},
-            {"id": "DEAL-005", "contact": "Epsilon LLC",   "email": "contact@epsilonllc.com",    "stage": "Ghosted",        "days_inactive": 33, "value": 18000},
-            {"id": "DEAL-007", "contact": "Theta Ventures","email": "bd@thetaventures.co",        "stage": "Proposal Sent",  "days_inactive": 11, "value": 9500},
-        ],
-        "overdue_payments": [
-            {"id": "INV-2024-089", "client": "Eta Systems", "amount": 7200,  "days_overdue": 25},
-            {"id": "INV-2024-091", "client": "Iota Corp",   "amount": 4500,  "days_overdue": 31},
-        ],
-        "support_escalations": 5,
-    },
-}
-
 # Shared in-process state — survives across node calls within the same run
 _CURRENT_CYCLE_DATA: dict = {}
 _CURRENT_LEAKS: list = []
 
 
 # ---------------------------------------------------------------------------
-# HubSpot CRM integration helpers  (optional — falls back to _PIPELINE_DB)
+# HubSpot CRM integration helpers  
 # ---------------------------------------------------------------------------
 
 def _fetch_hubspot_contact_emails(headers: dict, deal_ids: list) -> dict:
@@ -238,12 +196,14 @@ def scan_pipeline(cycle: int) -> dict:
 
     next_cycle = int(cycle) + 1
 
-    # Try real HubSpot CRM first; fall back to simulated _PIPELINE_DB
+    # Use HubSpot CRM; fall back to empty snapshot if API key not set
     hs_data = _fetch_hubspot_deals()
-    if hs_data is not None:
-        data = hs_data
-    else:
-        data = _PIPELINE_DB.get(next_cycle, _PIPELINE_DB[3])
+    data = hs_data if hs_data is not None else {
+        "deals": [],
+        "overdue_payments": [],
+        "support_escalations": 0,
+    }
+
     _CURRENT_CYCLE_DATA = data
 
     source = data.get("_source", "simulated")

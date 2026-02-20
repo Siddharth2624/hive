@@ -63,7 +63,7 @@ edges = [
         source="followup",
         target="monitor",
         condition=EdgeCondition.CONDITIONAL,
-        condition_expr='halt != "true" and halt != True',
+        condition_expr='str(halt).lower() != "true"',
         priority=1,
     ),
 ]
