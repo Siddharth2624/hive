@@ -11,8 +11,12 @@ for ghosted contacts — cycling until a critical threshold triggers escalation 
 
 | Pattern | Trigger | Business Risk |
 |---|---|---|
-| **GHOSTED** | Prospect silent 21+ days | Lost deal value |
-| **STALLED** | Deal stuck in same stage 10-20 days | Slow pipeline velocity |
+| **GHOSTED** | No sales activity for **>30 days** | Lost deal value |
+| **STALLED** | No sales activity for **15–30 days** (>14 and ≤30) | Slow pipeline velocity |
+
+Inactivity is measured using `notes_last_contacted` (last logged call, email, or meeting),
+which is populated on all HubSpot plans. Falls back to `hs_lastmodifieddate` if no activity
+has ever been logged.
 
 ---
 
@@ -24,7 +28,7 @@ monitor ──► analyze ──► notify ──► followup
            ◄───────────────────────────┘   (loop while halt != true)
 ```
 
-- **monitor** — LLM calls `hubspot_search_deals` + `hubspot_search_contacts` (MCP) to fetch deals and contact emails, then calls `scan_pipeline` to store deals for analysis
+- **monitor** — LLM calls `hubspot_search_deals` (with auto-retry on error) to fetch deals, then resolves contact emails via `hubspot_get_deal` (associations API) + `hubspot_get_contact`, then calls `scan_pipeline` to normalise and store deals
 - **analyze** — calls `detect_revenue_leaks` to classify GHOSTED/STALLED patterns and compute severity
 - **notify** — calls `build_telegram_alert` to build the report, then `telegram_send_message` (MCP) to send the Telegram alert + prints console report
 - **followup** — calls `prepare_followup_emails` to get email payloads, then `gmail_create_draft` (MCP) to create Gmail drafts for GHOSTED contacts
@@ -101,8 +105,9 @@ All external integrations go exclusively through the `hive-tools` MCP server.
 
 | MCP Tool | Purpose |
 |-----------|---------|
-| `hubspot_search_deals` | Search for open HubSpot deals |
-| `hubspot_search_contacts` | Fetch contact email addresses by deal name |
+| `hubspot_search_deals` | Search for open HubSpot deals (retried once on error) |
+| `hubspot_get_deal` | Fetch deal associations (contact IDs) via Associations API |
+| `hubspot_get_contact` | Fetch contact email, firstname, lastname by ID |
 
 ### Email MCP Tools
 
@@ -122,10 +127,10 @@ All external integrations go exclusively through the `hive-tools` MCP server.
 
 | Tool | Purpose |
 |------|---------|
-| `scan_pipeline(cycle, deals)` | Normalises and stores HubSpot deals fetched by the LLM into a session-isolated ContextVar cache |
-| `detect_revenue_leaks(cycle)` | Reads stored deals, classifies GHOSTED/STALLED patterns, computes severity + at-risk USD |
-| `build_telegram_alert(...)` | Builds HTML Telegram message + prints console report; auto-fetches `chat_id` via `getUpdates` if not set |
-| `prepare_followup_emails(cycle)` | Builds per-contact HTML email payloads for all GHOSTED contacts this cycle |
+| `scan_pipeline(cycle, deals)` | Normalises HubSpot deals (resolves `notes_last_contacted` → `days_inactive`, maps stage IDs); serialises to `deals_json` passed between nodes |
+| `detect_revenue_leaks(cycle, deals_json)` | Classifies GHOSTED (>30d) / STALLED (>14d) patterns, computes severity + at-risk USD; returns `leaks_json` |
+| `build_telegram_alert(...)` | Builds HTML Telegram message + prints console report from `leaks_json`; auto-fetches `chat_id` via `getUpdates` if not set |
+| `prepare_followup_emails(cycle, leaks_json)` | Builds per-contact HTML email payloads for all GHOSTED contacts this cycle |
 
 Tools are registered via `TOOLS` dict + `tool_executor()` pattern and discovered
 automatically by `ToolRegistry.discover_from_module()` at agent startup.

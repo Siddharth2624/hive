@@ -24,8 +24,8 @@
         "node_type": "event_loop",
         "max_node_visits": 0,
         "input_keys": ["cycle"],
-        "output_keys": ["cycle", "deals_scanned"],
-        "tools": ["hubspot_search_deals", "hubspot_search_contacts", "scan_pipeline"]
+        "output_keys": ["cycle", "deals_scanned", "overdue_invoices", "support_escalations", "deals_json"],
+        "tools": ["hubspot_search_deals", "hubspot_get_deal", "hubspot_get_contact", "scan_pipeline"]
       },
       {
         "id": "analyze",
@@ -33,8 +33,8 @@
         "description": "Detect revenue leak patterns in current HubSpot pipeline snapshot.",
         "node_type": "event_loop",
         "max_node_visits": 0,
-        "input_keys": ["cycle", "deals_scanned"],
-        "output_keys": ["cycle", "leak_count", "severity", "total_at_risk", "halt"],
+        "input_keys": ["cycle", "deals_scanned", "overdue_invoices", "support_escalations", "deals_json"],
+        "output_keys": ["cycle", "leak_count", "severity", "total_at_risk", "halt", "leaks_json"],
         "tools": ["detect_revenue_leaks"]
       },
       {
@@ -43,9 +43,9 @@
         "description": "Send a formatted revenue leak alert and pass halt state through.",
         "node_type": "event_loop",
         "max_node_visits": 0,
-        "input_keys": ["cycle", "leak_count", "severity", "total_at_risk", "halt"],
+        "input_keys": ["cycle", "leak_count", "severity", "total_at_risk", "halt", "leaks_json"],
         "output_keys": ["cycle", "halt"],
-        "tools": ["build_telegram_alert", "telegram_send_message"]
+        "tools": ["build_telegram_alert"]
       },
       {
         "id": "followup",
@@ -53,7 +53,7 @@
         "description": "Create Gmail draft re-engagement emails for GHOSTED contacts using gmail_create_draft MCP tool.",
         "node_type": "event_loop",
         "max_node_visits": 0,
-        "input_keys": ["cycle", "halt"],
+        "input_keys": ["cycle", "halt", "leaks_json"],
         "output_keys": ["cycle", "halt"],
         "tools": ["prepare_followup_emails", "gmail_create_draft"]
       }

@@ -4,43 +4,39 @@ HubSpot Revenue Leak Detector — Custom Tools
 Architecture
 ------------
 The LLM uses HubSpot MCP tools to fetch live deal data, then passes that data
-to our Python tools which process it and store state via contextvars so it
-flows cleanly across nodes without re-passing through the LLM.
+to our Python tools which serialise it and return it via output keys so it
+flows cleanly across nodes via output_keys/input_keys without contextvars.
 
 Node flow:
-  monitor   → hubspot_search_deals (MCP) + hubspot_get_contact (MCP)
-              → scan_pipeline(cycle, deals)        [stores deals for analysis]
-  analyze   → detect_revenue_leaks(cycle)          [reads stored deals]
-  notify    → build_telegram_alert(...)            [returns HTML + chat_id]
-              → telegram_send_message (MCP)
-  followup  → prepare_followup_emails(cycle)       [reads GHOSTED leaks]
+  monitor   → hubspot_search_deals (MCP)
+              + hubspot_get_deal(include_associations=["contacts"]) (MCP)
+              + hubspot_get_contact (MCP)
+              → scan_pipeline(cycle, deals)     [returns deals_json]
+              → set_output("deals_json", ...)
+
+  analyze   → detect_revenue_leaks(cycle, deals_json)  [returns leaks_json]
+              → set_output("leaks_json", ...)
+
+  notify    → build_telegram_alert(..., leaks_json)  [builds + sends Telegram message internally]
+
+  followup  → prepare_followup_emails(cycle, leaks_json)
               → gmail_create_draft (MCP) per GHOSTED contact
 
 Required credentials (via env vars / MCP credential store):
   HUBSPOT_ACCESS_TOKEN  — HubSpot Private App token
-  TELEGRAM_BOT_TOKEN    — Telegram bot token (chat_id auto-fetched if unset)
-  TELEGRAM_CHAT_ID      — Optional; auto-fetched from getUpdates if not set
+  TELEGRAM_BOT_TOKEN    — Telegram bot token
+  TELEGRAM_CHAT_ID      — Telegram chat ID (find via /getUpdates)
   Google OAuth          — Required for gmail_create_draft (sign in via hive open)
 """
 
-import contextvars
 import html as _html
-import httpx
 import json
 import os
+import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
 from framework.llm.provider import Tool, ToolUse, ToolResult
-
-
-# ---------------------------------------------------------------------------
-# Session-isolated state (contextvars — thread + session safe)
-# ---------------------------------------------------------------------------
-_leaks_var: contextvars.ContextVar[list] = contextvars.ContextVar("_leaks")
-_deals_cache_var: contextvars.ContextVar[list] = contextvars.ContextVar(
-    "_deals_cache", default=[]
-)
 
 MAX_CYCLES = 3  # halt after this many consecutive low-severity cycles
 MAX_TOTAL_CYCLES = 10  # absolute cap — prevents infinite loops
@@ -65,67 +61,53 @@ _STAGE_MAP: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
-# Telegram chat_id auto-fetch helper
+# Telegram chat_id helper
 # ---------------------------------------------------------------------------
 
-_telegram_chat_id_cache: str | None = None
 
-
-def _auto_fetch_telegram_chat_id() -> str:
+def _get_telegram_chat_id() -> str:
     """
-    Return TELEGRAM_CHAT_ID from env, or auto-fetch via getUpdates API.
+    Return TELEGRAM_CHAT_ID from env.
 
-    This is a bootstrapping/discovery call — there is no MCP tool that exposes
-    getUpdates, and users have no practical way to find their chat_id otherwise.
-    Returns empty string if Telegram is not configured.
-
-    The result is cached in a module-level variable after the first successful
-    fetch so subsequent calls within the same process do not make extra HTTP
-    requests.
+    Chat ID discovery is handled outside this agent — set TELEGRAM_CHAT_ID
+    in the environment before running. To find your chat ID, send any message
+    to your bot and check: https://api.telegram.org/bot<TOKEN>/getUpdates
     """
-    global _telegram_chat_id_cache
-    if _telegram_chat_id_cache is not None:
-        return _telegram_chat_id_cache
+    return os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    if chat_id:
-        _telegram_chat_id_cache = chat_id
-        return _telegram_chat_id_cache
 
+def _send_telegram(chat_id: str, html_message: str, parse_mode: str = "HTML") -> dict:
+    """
+    Send a Telegram message directly via the Bot API.
+
+    Uses urllib (stdlib only) so the full message reaches Telegram without
+    the LLM ever touching or relaying the text content.
+
+    Returns a dict with "ok": True on success, or "error": str on failure.
+    """
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
-        _telegram_chat_id_cache = ""
-        return _telegram_chat_id_cache
+        return {"error": "TELEGRAM_BOT_TOKEN env var not set"}
+    if not chat_id:
+        return {"error": "chat_id is empty"}
 
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = json.dumps({
+        "chat_id": chat_id,
+        "text": html_message,
+        "parse_mode": parse_mode,
+    }).encode()
+    req = urllib.request.Request(
+        url, data=payload, headers={"Content-Type": "application/json"}
+    )
     try:
-        resp = httpx.get(
-            f"https://api.telegram.org/bot{token}/getUpdates",
-            timeout=10.0,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("ok") and data.get("result"):
-                for update in reversed(data["result"]):
-                    msg = update.get("message") or update.get("channel_post")
-                    if msg and "chat" in msg:
-                        found = str(msg["chat"]["id"])
-                        name = msg["chat"].get("username") or msg["chat"].get(
-                            "first_name", ""
-                        )
-                        print(f"\n📱 Auto-detected Telegram chat_id: {found}  ({name})")
-                        print(
-                            f'   Tip: export TELEGRAM_CHAT_ID="{found}" to skip auto-fetch\n'
-                        )
-                        _telegram_chat_id_cache = found
-                        return _telegram_chat_id_cache
-        print(
-            "\n⚠️  No Telegram updates found — send any message to your bot first, then retry.\n"
-        )
-    except Exception as exc:
-        print(f"\n⚠️  Could not auto-fetch Telegram chat_id: {exc}\n")
-
-    _telegram_chat_id_cache = ""
-    return _telegram_chat_id_cache
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+            if data.get("ok"):
+                return {"ok": True}
+            return {"error": data.get("description", "unknown Telegram error")}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +135,7 @@ def _scan_pipeline(cycle: int, deals: list | None = None) -> dict:
     Returns:
         next_cycle    — incremented cycle number
         deals_scanned — number of open deals processed
+        deals_json    — JSON string of normalised deals (pass to detect_revenue_leaks)
         status        — "ok" or "no_deals"
     """
     try:
@@ -160,10 +143,6 @@ def _scan_pipeline(cycle: int, deals: list | None = None) -> dict:
     except (ValueError, TypeError):
         cycle_num = 0
     next_cycle = cycle_num + 1
-
-    # Reset session state for this cycle
-    _leaks_var.set([])
-    _deals_cache_var.set([])
 
     if not deals:
         print(
@@ -173,6 +152,7 @@ def _scan_pipeline(cycle: int, deals: list | None = None) -> dict:
         return {
             "next_cycle": next_cycle,
             "deals_scanned": 0,
+            "deals_json": "[]",
             "status": "no_deals",
         }
 
@@ -183,20 +163,32 @@ def _scan_pipeline(cycle: int, deals: list | None = None) -> dict:
         if not isinstance(raw, dict):
             continue
 
-        # Resolve days_inactive — accept pre-computed or calculate from timestamp
-        days_inactive = raw.get("days_inactive", 0)
-        if not days_inactive:
-            last_mod = raw.get("hs_lastmodifieddate") or raw.get("lastmodifieddate", "")
-            if last_mod:
-                try:
-                    dt = datetime.fromisoformat(str(last_mod).replace("Z", "+00:00"))
-                    days_inactive = max(0, (now - dt).days)
-                except (ValueError, OverflowError):
-                    days_inactive = 0
+        # Resolve days_inactive from real sales activity.
+        # PRIMARY:  notes_last_contacted — last logged call/email/meeting (all plans).
+        # BACKUP:   hs_lastmodifieddate  — last property change on the deal record.
+        # Always recompute from raw date strings; do not trust the LLM's arithmetic.
+        last_activity = (
+            raw.get("notes_last_contacted")
+            or raw.get("hs_lastmodifieddate")
+        )
+        if last_activity:
+            try:
+                dt = datetime.fromisoformat(str(last_activity).replace("Z", "+00:00"))
+                days_inactive = max(0, (now - dt).days)
+            except (ValueError, OverflowError):
+                days_inactive = int(raw.get("days_inactive") or 0)
+        else:
+            days_inactive = int(raw.get("days_inactive") or 0)
 
-        # Resolve stage — accept raw API key or already-mapped name
+        # Resolve stage — accept raw API key or already-mapped name.
+        # Numeric IDs are custom pipeline stages; label them clearly.
         raw_stage = str(raw.get("stage") or raw.get("dealstage") or "unknown")
-        stage = _STAGE_MAP.get(raw_stage, raw_stage.replace("_", " ").title())
+        if raw_stage in _STAGE_MAP:
+            stage = _STAGE_MAP[raw_stage]
+        elif raw_stage.isdigit():
+            stage = f"Stage {raw_stage}"  # custom pipeline numeric ID
+        else:
+            stage = raw_stage.replace("_", " ").title()
 
         # Skip closed deals
         if raw_stage in ("closedwon", "closedlost"):
@@ -220,8 +212,6 @@ def _scan_pipeline(cycle: int, deals: list | None = None) -> dict:
             }
         )
 
-    _deals_cache_var.set(normalised)
-
     print(
         f"\n[scan_pipeline] Cycle {next_cycle} — {len(normalised)} open deal(s) from HubSpot"
     )
@@ -235,40 +225,47 @@ def _scan_pipeline(cycle: int, deals: list | None = None) -> dict:
     return {
         "next_cycle": next_cycle,
         "deals_scanned": len(normalised),
+        "deals_json": json.dumps(normalised),
         "status": "ok",
     }
 
 
-def _detect_revenue_leaks(cycle: int) -> dict:
+def _detect_revenue_leaks(cycle: int, deals_json: str | None = None) -> dict:
     """
-    Analyse the deals stored by scan_pipeline and detect revenue leak patterns.
-
-    Must be called AFTER scan_pipeline in the same cycle.
-
-    Leak types:
-      GHOSTED  — deal silent for 21+ days (highest priority)
-      STALLED  — deal inactive 10–20 days, stuck in same stage
+    Analyse deals and detect revenue leak patterns.
 
     Args:
-        cycle: Current monitoring cycle (use next_cycle from scan_pipeline).
+        cycle:      Current monitoring cycle (use next_cycle from scan_pipeline).
+        deals_json: JSON string of deals from scan_pipeline output. REQUIRED —
+                    pass the deals_json value returned by scan_pipeline so state
+                    survives across event_loop node boundaries.
 
     Returns:
         leak_count      — total leaks detected
         severity        — low / medium / high / critical
         total_at_risk   — USD sum of at-risk deal values
         halt            — True when agent should stop looping
+        leaks_json      — JSON string of leak objects for followup node
     """
     try:
         cycle_num = int(float(cycle or 0))
     except (ValueError, TypeError):
         cycle_num = 0
 
-    deals = _deals_cache_var.get([])
+    # Prefer deals_json passed explicitly (survives node async context boundary).
+    # Fall back to contextvar for single-session / test use.
+    if deals_json is not None:
+        try:
+            deals = json.loads(deals_json)
+        except (json.JSONDecodeError, TypeError):
+            deals = []
+    else:
+        deals = []
 
     if not deals:
         _no_data_halt = cycle_num >= MAX_CYCLES
         print(
-            f"[detect_revenue_leaks] Cycle {cycle_num} — no deal data in cache, "
+            f"[detect_revenue_leaks] Cycle {cycle_num} — no deal data, "
             f"halt={_no_data_halt}"
         )
         return {
@@ -277,7 +274,8 @@ def _detect_revenue_leaks(cycle: int) -> dict:
             "severity": "low",
             "total_at_risk": 0,
             "halt": _no_data_halt,
-            "warning": "No deal data — call scan_pipeline first each cycle",
+            "leaks_json": "[]",
+            "warning": "No deal data — ensure deals_json from scan_pipeline is passed",
         }
 
     leaks: list[dict] = []
@@ -289,7 +287,8 @@ def _detect_revenue_leaks(cycle: int) -> dict:
         stage = deal.get("stage", "Unknown")
         email = deal.get("email", "")
 
-        if days >= 21:
+        if days > 30:
+            # No real sales activity for over 30 days — treat as ghosted.
             leaks.append(
                 {
                     "type": "GHOSTED",
@@ -301,11 +300,12 @@ def _detect_revenue_leaks(cycle: int) -> dict:
                     "stage": stage,
                     "recommendation": (
                         f"Send re-engagement sequence to {name} immediately — "
-                        f"silent for {days} days."
+                        f"no sales activity for {days} days."
                     ),
                 }
             )
-        elif days >= 10:
+        elif days > 14:
+            # 15-30 days without activity — deal is stalling.
             leaks.append(
                 {
                     "type": "STALLED",
@@ -322,10 +322,10 @@ def _detect_revenue_leaks(cycle: int) -> dict:
                 }
             )
 
-    _leaks_var.set(leaks)
-
     total_at_risk = int(sum(leak.get("value", 0) for leak in leaks))
     ghosted_count = sum(1 for leak in leaks if leak["type"] == "GHOSTED")
+
+
 
     if ghosted_count >= 2 or total_at_risk >= 50_000:
         severity = "critical"
@@ -355,6 +355,8 @@ def _detect_revenue_leaks(cycle: int) -> dict:
         "severity": severity,
         "total_at_risk": total_at_risk,
         "halt": halt,
+        # Serialised leaks for followup node — passes across node boundary
+        "leaks_json": json.dumps(leaks),
     }
 
 
@@ -363,12 +365,13 @@ def _build_telegram_alert(
     leak_count: int,
     severity: str,
     total_at_risk: int,
+    leaks_json: str | None = None,
 ) -> dict:
     """
     Print a rich console report and build an HTML Telegram alert.
 
-    Auto-fetches TELEGRAM_CHAT_ID via getUpdates if not set in env.
-    Users often don't know their chat_id — this discovery call removes that friction.
+    chat_id is read from TELEGRAM_CHAT_ID env var. Set it before running.
+    To find your chat ID: https://api.telegram.org/bot<TOKEN>/getUpdates
 
     Args:
         cycle:         Current monitoring cycle.
@@ -377,8 +380,8 @@ def _build_telegram_alert(
         total_at_risk: Total USD value at risk.
 
     Returns:
-        html_message  — HTML string ready for telegram_send_message
-        chat_id       — Telegram chat ID (from env or auto-fetched; empty if unavailable)
+        telegram_sent  — True if the message was delivered, False otherwise
+        telegram_error — error string if send failed, empty string on success
         cycle / severity / leak_count / total_at_risk — echoed for context
     """
     try:
@@ -390,7 +393,10 @@ def _build_telegram_alert(
 
     sev = str(severity).lower()
     emoji = _SEVERITY_EMOJI.get(sev, "⚪")
-    leaks = _leaks_var.get([])
+    try:
+        leaks = json.loads(leaks_json) if leaks_json else []
+    except (json.JSONDecodeError, TypeError):
+        leaks = []
     esc = _html.escape
 
     # ── Console report ──────────────────────────────────────────────────────
@@ -429,17 +435,25 @@ def _build_telegram_alert(
     print(f"{border}\n")
 
     # ── Telegram HTML message ─────────────────────────────────────────────
+    # Use HTML entities for emoji — LLMs mangle raw multi-plane Unicode
+    # when serialising tool call arguments, corrupting the characters.
+    _sev_entity = {
+        "low": "&#x1F7E2;",
+        "medium": "&#x1F7E1;",
+        "high": "&#x1F534;",
+        "critical": "&#x1F6A8;",
+    }.get(sev, "")
     lines = [
-        f"<b>💰 HubSpot Revenue Leak Detector — Cycle {cycle_num}</b>",
+        f"<b>&#x1F4B0; HubSpot Revenue Leak Detector &#x2014; Cycle {cycle_num}</b>",
         "",
-        f"Severity:       {emoji} <b>{sev.upper()}</b>",
+        f"Severity:       {_sev_entity} <b>{sev.upper()}</b>",
         f"Leaks detected: <b>{leak_count_int}</b>",
         f"Total at risk:  <b>${at_risk_int:,}</b>",
         "",
     ]
 
     if not leaks:
-        lines.append("✅ Pipeline healthy — no leaks found.")
+        lines.append("&#x2705; Pipeline healthy &#x2014; no leaks found.")
     else:
         for i, leak in enumerate(leaks, 1):
             lt = esc(leak.get("type", "UNKNOWN"))
@@ -453,47 +467,55 @@ def _build_telegram_alert(
                 f"Inactive {esc(str(leak.get('days_inactive', 0)))}d"
             )
             lines.append(f"  Value   : ${leak.get('value', 0):,}")
-            lines.append(f"  ➜ {esc(str(leak.get('recommendation', '')))}")
+            lines.append(f"  &#x279C; {esc(str(leak.get('recommendation', '')))}")
             lines.append("")
 
     action_tg = {
-        "critical": "🚨 ESCALATE to VP Sales &amp; Finance immediately.",
-        "high": "🔴 Assign owners — act within 24 hours.",
-        "medium": "🟡 Review and schedule follow-ups.",
-        "low": "🟢 Continue monitoring.",
+        "critical": "&#x1F6A8; ESCALATE to VP Sales &amp; Finance immediately.",
+        "high": "&#x1F534; Assign owners &#x2014; act within 24 hours.",
+        "medium": "&#x1F7E1; Review and schedule follow-ups.",
+        "low": "&#x1F7E2; Continue monitoring.",
     }.get(sev, "")
     if action_tg:
         lines.append(action_tg)
 
     html_message = "\n".join(lines)
-    chat_id = _auto_fetch_telegram_chat_id()
+    chat_id = _get_telegram_chat_id()
 
+    # ── Send directly — don't ask the LLM to relay the full message ─────────
     if not chat_id:
         print(
-            "  ⚠️  Telegram alert cannot be sent — TELEGRAM_BOT_TOKEN not set or "
-            "no updates found.\n"
-            "     Set TELEGRAM_BOT_TOKEN and send any message to your bot first."
+            "  ⚠️  Telegram alert cannot be sent — TELEGRAM_CHAT_ID not set.\n"
+            "     Set TELEGRAM_CHAT_ID env var. To find your chat ID:\n"
+            "     https://api.telegram.org/bot<TOKEN>/getUpdates"
         )
+        tg_result = {"error": "TELEGRAM_CHAT_ID not set"}
+    else:
+        tg_result = _send_telegram(chat_id, html_message)
+        if tg_result.get("ok"):
+            print("  ✅  Telegram alert sent successfully.")
+        else:
+            print(f"  ⚠️  Telegram send failed: {tg_result.get('error')}")
 
     return {
         "cycle": cycle_num,
         "severity": sev,
         "leak_count": leak_count_int,
         "total_at_risk": at_risk_int,
-        "html_message": html_message,
-        "chat_id": chat_id,
+        "telegram_sent": tg_result.get("ok", False),
+        "telegram_error": tg_result.get("error", ""),
     }
 
 
-def _prepare_followup_emails(cycle: int) -> dict:
+def _prepare_followup_emails(cycle: int, leaks_json: str | None = None) -> dict:
     """
     Build follow-up email payloads for every GHOSTED contact this cycle.
 
-    The LLM should call gmail_create_draft MCP tool for each contact in the
-    returned `contacts` list.
-
     Args:
-        cycle: Current monitoring cycle.
+        cycle:      Current monitoring cycle.
+        leaks_json: JSON string of leaks from detect_revenue_leaks output.
+                    REQUIRED — pass leaks_json from context so state survives
+                    across event_loop node boundaries.
 
     Returns:
         contacts: List of dicts — one per GHOSTED contact — each with:
@@ -509,7 +531,15 @@ def _prepare_followup_emails(cycle: int) -> dict:
     except (ValueError, TypeError):
         cycle_num = 0
 
-    ghosted = [leak for leak in _leaks_var.get([]) if leak.get("type") == "GHOSTED"]
+    # Prefer leaks_json passed explicitly (survives node async context boundary).
+    if leaks_json is not None:
+        try:
+            all_leaks = json.loads(leaks_json)
+        except (json.JSONDecodeError, TypeError):
+            all_leaks = []
+    else:
+        all_leaks = []
+    ghosted = [leak for leak in all_leaks if leak.get("type") == "GHOSTED"]
 
     if not ghosted:
         print(
@@ -596,7 +626,8 @@ TOOLS: dict[str, Tool] = {
         description=(
             "Process and store HubSpot deals fetched via MCP tools for analysis. "
             "Call AFTER fetching deals with hubspot_search_deals and contact emails "
-            "with hubspot_get_contact. Pass the assembled deals array."
+            "with hubspot_get_contact. Pass the assembled deals array. "
+            "Returns next_cycle, deals_scanned, deals_json (JSON string — pass to detect_revenue_leaks)."
         ),
         parameters={
             "type": "object",
@@ -642,10 +673,10 @@ TOOLS: dict[str, Tool] = {
     "detect_revenue_leaks": Tool(
         name="detect_revenue_leaks",
         description=(
-            "Analyse stored HubSpot deals and classify revenue leak patterns: "
+            "Analyse HubSpot deals and classify revenue leak patterns: "
             "GHOSTED (21+ days silent) and STALLED (10-20 days inactive). "
-            "Must be called AFTER scan_pipeline. Returns leak_count, severity, "
-            "total_at_risk, and halt flag."
+            "Pass deals_json from scan_pipeline output. "
+            "Returns leak_count, severity, total_at_risk, halt, and leaks_json."
         ),
         parameters={
             "type": "object",
@@ -654,17 +685,25 @@ TOOLS: dict[str, Tool] = {
                     "type": "integer",
                     "description": "Cycle number (use next_cycle returned by scan_pipeline).",
                 },
+                "deals_json": {
+                    "type": "string",
+                    "description": (
+                        "JSON string of deals from scan_pipeline's deals_json output. "
+                        "Must be passed so data survives the node async context boundary."
+                    ),
+                },
             },
-            "required": ["cycle"],
+            "required": ["cycle", "deals_json"],
         },
     ),
     "build_telegram_alert": Tool(
         name="build_telegram_alert",
         description=(
-            "Print a rich console cycle report and build an HTML Telegram alert. "
-            "Returns html_message and chat_id — pass both to telegram_send_message. "
-            "Auto-fetches chat_id via getUpdates if TELEGRAM_CHAT_ID is not set. "
-            "Call AFTER detect_revenue_leaks."
+            "Print a rich console cycle report, build an HTML Telegram alert, "
+            "and send it directly to Telegram (reads TELEGRAM_BOT_TOKEN and "
+            "TELEGRAM_CHAT_ID from env automatically). "
+            "Returns telegram_sent=True/False. "
+            "Call AFTER detect_revenue_leaks. Do NOT call telegram_send_message separately."
         ),
         parameters={
             "type": "object",
@@ -682,8 +721,15 @@ TOOLS: dict[str, Tool] = {
                     "type": "integer",
                     "description": "Total USD value at risk.",
                 },
+                "leaks_json": {
+                    "type": "string",
+                    "description": (
+                        "JSON string of leaks from detect_revenue_leaks's leaks_json output. "
+                        "Pass verbatim so individual deal details appear in the alert body."
+                    ),
+                },
             },
-            "required": ["cycle", "leak_count", "severity", "total_at_risk"],
+            "required": ["cycle", "leak_count", "severity", "total_at_risk", "leaks_json"],
         },
     ),
     "prepare_followup_emails": Tool(
@@ -691,6 +737,7 @@ TOOLS: dict[str, Tool] = {
         description=(
             "Build draft email payloads for all GHOSTED contacts this cycle. "
             "Returns a contacts array — call gmail_create_draft MCP tool for each entry. "
+            "Pass leaks_json from detect_revenue_leaks output so data survives the node boundary. "
             "Must be called AFTER detect_revenue_leaks."
         ),
         parameters={
@@ -700,8 +747,15 @@ TOOLS: dict[str, Tool] = {
                     "type": "integer",
                     "description": "Current monitoring cycle.",
                 },
+                "leaks_json": {
+                    "type": "string",
+                    "description": (
+                        "JSON string of leaks from detect_revenue_leaks's leaks_json output. "
+                        "Must be passed so data survives the node async context boundary."
+                    ),
+                },
             },
-            "required": ["cycle"],
+            "required": ["cycle", "leaks_json"],
         },
     ),
 }

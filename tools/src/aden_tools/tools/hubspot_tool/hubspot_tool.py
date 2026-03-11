@@ -81,11 +81,14 @@ class _HubSpotClient:
         object_type: str,
         object_id: str,
         properties: list[str] | None = None,
+        associations: list[str] | None = None,
     ) -> dict[str, Any]:
         """Get a single CRM object by ID."""
-        params: dict[str, str] = {}
+        params: dict[str, Any] = {}
         if properties:
             params["properties"] = ",".join(properties)
+        if associations:
+            params["associations"] = ",".join(associations)
 
         response = httpx.get(
             f"{HUBSPOT_API_BASE}/crm/v3/objects/{object_type}/{object_id}",
@@ -481,6 +484,7 @@ def register_tools(
     def hubspot_get_deal(
         deal_id: str,
         properties: list[str] | None = None,
+        include_associations: list[str] | None = None,
         account: str = "",
     ) -> dict:
         """
@@ -490,6 +494,9 @@ def register_tools(
             deal_id: The HubSpot deal ID
             properties: List of properties to return
                 (e.g., ["dealname", "amount", "dealstage"])
+            include_associations: Object types to include associations for
+                (e.g., ["contacts"] returns associated contact IDs under
+                result.associations.contacts.results)
 
         Returns:
             Dict with deal data or error
@@ -498,7 +505,7 @@ def register_tools(
         if isinstance(client, dict):
             return client
         try:
-            return client.get_object("deals", deal_id, properties)
+            return client.get_object("deals", deal_id, properties, include_associations)
         except httpx.TimeoutException:
             return {"error": "Request timed out"}
         except httpx.RequestError as e:
