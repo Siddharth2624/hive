@@ -48,6 +48,7 @@ def _parse_list_param(value: str | list[str] | None) -> list[str] | None:
             pass
     return None
 
+
 HUBSPOT_API_BASE = "https://api.hubapi.com"
 
 
