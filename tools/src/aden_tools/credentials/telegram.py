@@ -70,6 +70,8 @@ TELEGRAM_CREDENTIALS = {
         aden_provider_name=None,
         direct_api_key_supported=False,
         api_key_instructions="""To get your Telegram Chat ID:
+OPTIONAL: Can be auto-discovered via telegram_get_chat_id tool if bot has recent messages.
+MANUAL:
 1. Start a chat with your bot on Telegram
 2. Send any message to the bot
 3. Visit https://api.telegram.org/bot<TOKEN>/getUpdates

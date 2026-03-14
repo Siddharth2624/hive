@@ -324,6 +324,20 @@ class _TelegramClient:
         )
         return self._handle_response(response)
 
+    def get_updates(self, timeout: int = 0) -> dict[str, Any]:
+        """Get incoming updates via long polling.
+
+        API ref: https://core.telegram.org/bots/api#getupdates
+        Used to automatically discover chat_id from recent messages.
+        """
+        params: dict[str, Any] = {"timeout": timeout}
+        response = httpx.get(
+            f"{self._base_url}/getUpdates",
+            params=params,
+            timeout=30.0,
+        )
+        return self._handle_response(response)
+
 
 def register_tools(
     mcp: FastMCP,
@@ -819,25 +833,56 @@ def register_tools(
         """
         Get the default Telegram chat ID configured for this agent.
 
-        Returns the chat ID that should be used as the default target
-        for Telegram messages sent by this agent.
+        First checks the configured chat_id from environment or credential store.
+        If not configured, attempts to auto-discover by fetching recent updates
+        from the Telegram Bot API.
 
         Returns:
             Dict with 'chat_id' on success, or error dict on failure.
-            If no chat_id is configured, returns help message.
+            Auto-discovery works if someone has sent a message to the bot recently.
         """
+        # First try configured chat_id
         chat_id = _get_chat_id()
-        if not chat_id:
+        if chat_id:
+            return {"chat_id": chat_id}
+
+        # Try to auto-discover from recent updates
+        client = _get_client()
+        if isinstance(client, dict):
+            return client
+
+        try:
+            updates_result = client.get_updates()
+            if isinstance(updates_result, dict):
+                result = updates_result.get("result", [])
+                if result and isinstance(result, list) and len(result) > 0:
+                    # Get the most recent message's chat_id
+                    last_update = result[-1]
+                    message = last_update.get("message", {})
+                    chat_id = str(message.get("chat", {}).get("id", ""))
+                    if chat_id:
+                        return {
+                            "chat_id": chat_id,
+                            "source": "auto_discovered",
+                            "note": (
+                                f"Chat ID discovered from most recent update. "
+                                f"Consider setting TELEGRAM_CHAT_ID={chat_id} "
+                                f"environment variable for persistence."
+                            ),
+                        }
+
             return {
-                "error": "No default chat ID configured",
+                "error": "No chat ID configured and no recent updates found",
                 "help": (
-                    "Set TELEGRAM_CHAT_ID environment variable or configure "
-                    "'telegram_chat_id' in credential store. To find your chat ID, "
-                    "send a message to your bot and check: "
+                    "Set TELEGRAM_CHAT_ID environment variable, or send a message "
+                    "to your bot and retry. To manually find your chat ID: "
                     "https://api.telegram.org/bot<TOKEN>/getUpdates"
                 ),
             }
-        return {"chat_id": chat_id}
+        except httpx.TimeoutException:
+            return {"error": "Telegram request timed out"}
+        except httpx.RequestError as e:
+            return {"error": f"Network error: {e}"}
 
     @mcp.tool()
     def telegram_set_chat_description(
