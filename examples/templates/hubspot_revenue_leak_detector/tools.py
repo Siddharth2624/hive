@@ -25,8 +25,7 @@ Node flow:
 
 Required credentials (via env vars / MCP credential store):
   HUBSPOT_ACCESS_TOKEN  — HubSpot Private App token
-  TELEGRAM_BOT_TOKEN    — Telegram bot token
-  TELEGRAM_CHAT_ID      — Telegram chat ID (find via /getUpdates)
+  TELEGRAM_BOT_TOKEN    — Telegram bot token (for MCP telegram tools)
   Google OAuth          — Required for gmail_create_draft (sign in via hive open)
 """
 
@@ -49,10 +48,10 @@ _DEALS_CACHE: dict[int, list[dict]] = {}
 
 def validate_credentials() -> tuple[bool, list[str]]:
     """Return (all_required_present, missing_list).
-    
-    Checks HubSpot (required), Telegram bot token (required), and Telegram chat ID (required).
-    Does NOT check Google OAuth as that's MCP-managed.
-    
+
+    Checks HubSpot (required) and Telegram bot token (required).
+    Does NOT check Google OAuth or Telegram chat_id as those are MCP-managed.
+
     Returns:
         (True, []) if all required credentials are present
         (False, [list of missing]) if any are missing
@@ -62,9 +61,8 @@ def validate_credentials() -> tuple[bool, list[str]]:
         missing.append("HUBSPOT_ACCESS_TOKEN")
     if not os.getenv("TELEGRAM_BOT_TOKEN", "").strip():
         missing.append("TELEGRAM_BOT_TOKEN")
-    if not os.getenv("TELEGRAM_CHAT_ID", "").strip():
-        missing.append("TELEGRAM_CHAT_ID")
     return (len(missing) == 0, missing)
+
 
 _SEVERITY_EMOJI: dict[str, str] = {
     "low": "🟢",
@@ -96,42 +94,7 @@ _STAGE_MAP: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
-# Telegram chat_id helper
-# ---------------------------------------------------------------------------
-
-
-def _get_telegram_chat_id() -> str:
-    """
-    Return TELEGRAM_CHAT_ID from env with validation.
-
-    Chat ID discovery is handled outside this agent — set TELEGRAM_CHAT_ID
-    in the environment before running. To find your chat ID, send any message
-    to your bot and check: https://api.telegram.org/bot<TOKEN>/getUpdates
-    
-    Returns:
-        Valid chat ID string, or empty string if missing/invalid
-    """
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    
-    # Telegram chat IDs are numeric (positive for users, negative for groups)
-    if not chat_id:
-        print(
-            "  ⚠️  TELEGRAM_CHAT_ID not set in environment.\n"
-            "     To find your chat ID, send a message to your bot and check:\n"
-            "     https://api.telegram.org/bot<TOKEN>/getUpdates"
-        )
-        return ""
-    
-    if not re.fullmatch(r"-?\d+", chat_id):
-        print(
-            f"  ✗ TELEGRAM_CHAT_ID '{chat_id}' is invalid. Expected numeric ID.\n"
-            "    Check: https://api.telegram.org/bot<TOKEN>/getUpdates"
-        )
-        return ""
-    
-    return chat_id
-
-
+# Tool implementations
 # ---------------------------------------------------------------------------
 # Tool implementations
 # ---------------------------------------------------------------------------
@@ -198,9 +161,8 @@ def _scan_pipeline(cycle: int, deals: list | None = None) -> dict:
         # PRIMARY:  notes_last_contacted — last logged call/email/meeting (all plans).
         # BACKUP:   hs_lastmodifieddate  — last property change on the deal record.
         # Always recompute from raw date strings; do not trust the LLM's arithmetic.
-        last_activity = (
-            raw.get("notes_last_contacted")
-            or raw.get("hs_lastmodifieddate")
+        last_activity = raw.get("notes_last_contacted") or raw.get(
+            "hs_lastmodifieddate"
         )
         days_inactive = 0
         if last_activity:
@@ -216,10 +178,14 @@ def _scan_pipeline(cycle: int, deals: list | None = None) -> dict:
                 days_inactive = max(0, (now - dt).days)
                 # Sanity check: reject dates in the future or >10 years in past
                 if days_inactive < 0 or days_inactive > 3650:
-                    print(f"  ⚠️  Deal {raw.get('id')} has invalid date: {last_activity} → {days_inactive}d")
+                    print(
+                        f"  ⚠️  Deal {raw.get('id')} has invalid date: {last_activity} → {days_inactive}d"
+                    )
                     days_inactive = int(raw.get("days_inactive") or 0)
             except (ValueError, OverflowError, TypeError) as e:
-                print(f"  ⚠️  Deal {raw.get('id')} failed to parse date '{last_activity}': {e}")
+                print(
+                    f"  ⚠️  Deal {raw.get('id')} failed to parse date '{last_activity}': {e}"
+                )
                 # Fall back only if parse fails
                 days_inactive = int(raw.get("days_inactive") or 0)
         else:
@@ -244,7 +210,6 @@ def _scan_pipeline(cycle: int, deals: list | None = None) -> dict:
             # Custom stage name: preserve the original with formatting
             stage = raw_stage.replace("_", " ").title().replace("-", " ")
 
-
         try:
             value = int(float(raw.get("value") or raw.get("amount") or 0))
         except (ValueError, TypeError):
@@ -265,15 +230,13 @@ def _scan_pipeline(cycle: int, deals: list | None = None) -> dict:
 
     # Store in module-level cache so detect_revenue_leaks can always read the
     # full deal list — immune to LLM truncation of the deals_json argument.
-    # IMPORTANT: Store under the cycle number that WILL be passed to next node.
-    # If scan_pipeline receives cycle=N, it stores at cache key N.
-    # Then detect_revenue_leaks receives cycle=N and should find data at key N.
-    _DEALS_CACHE[cycle_num] = normalised
+    # IMPORTANT: Store under next_cycle which is what monitor_node passes
+    # to the analyze node via set_output. This ensures cache key matches.
+    _DEALS_CACHE[next_cycle] = normalised
     # Cap cache to last 10 keys to prevent unbounded growth across many cycles.
     if len(_DEALS_CACHE) > 10:
         for old_key in sorted(_DEALS_CACHE.keys())[:-10]:
             del _DEALS_CACHE[old_key]
-
 
     print(
         f"\n[scan_pipeline] Cycle {next_cycle} — {len(normalised)} open deal(s) from HubSpot"
@@ -324,20 +287,26 @@ def _detect_revenue_leaks(cycle: int, deals_json: str | None = None) -> dict:
     for key in [cycle_num, cycle_num - 1, cycle_num + 1]:
         if _DEALS_CACHE.get(key):
             deals = _DEALS_CACHE[key]
-            print(f"[detect_revenue_leaks] Loaded {len(deals)} deals from cache (key={key})")
+            print(
+                f"[detect_revenue_leaks] Loaded {len(deals)} deals from cache (key={key})"
+            )
             break
     if not deals:
         # Fall back to most-recent cache entry regardless of cycle number
         for key in sorted(_DEALS_CACHE.keys(), reverse=True):
             if _DEALS_CACHE[key]:
                 deals = _DEALS_CACHE[key]
-                print(f"[detect_revenue_leaks] Loaded {len(deals)} deals from most-recent cache (key={key})")
+                print(
+                    f"[detect_revenue_leaks] Loaded {len(deals)} deals from most-recent cache (key={key})"
+                )
                 break
     if not deals and deals_json is not None:
         try:
             deals = json.loads(deals_json)
             if deals:
-                print(f"[detect_revenue_leaks] Loaded {len(deals)} deals from deals_json arg (cache was empty)")
+                print(
+                    f"[detect_revenue_leaks] Loaded {len(deals)} deals from deals_json arg (cache was empty)"
+                )
         except (json.JSONDecodeError, TypeError) as e:
             print(f"[detect_revenue_leaks] Failed to parse deals_json: {e}")
             deals = []
@@ -355,22 +324,10 @@ def _detect_revenue_leaks(cycle: int, deals_json: str | None = None) -> dict:
             "leak_count": 0,
             "severity": "low",
             "total_at_risk": 0,
-                "halt": "true" if _no_data_halt else "false",  # String, not boolean
+            "halt": "true" if _no_data_halt else "false",  # String, not boolean
             "leaks_json": "[]",
             "warning": "No deal data — ensure deals_json from scan_pipeline is passed",
         }
-
-    # Detect and warn about potential data consistency issues
-    # If we have deals but found 0 leaks, this may indicate a problem
-    ghosted_count = sum(1 for d in deals if d.get("days_inactive", 0) > _LEAK_THRESHOLDS["stalled_days"])
-    if ghosted_count > 0 and len(leaks) == 0:
-        print(
-            f"[detect_revenue_leaks] ⚠️ DATA CONSISTENCY WARNING: "
-            f"{ghosted_count} deal(s) inactive > {_LEAK_THRESHOLDS['stalled_days']}d "
-            f"but 0 leaks detected. Check deal data processing."
-        )
-
-    leaks: list[dict] = []
 
     leaks: list[dict] = []
     for deal in deals:
@@ -419,10 +376,21 @@ def _detect_revenue_leaks(cycle: int, deals_json: str | None = None) -> dict:
     total_at_risk = int(sum(leak.get("value", 0) for leak in leaks))
     ghosted_count = sum(1 for leak in leaks if leak["type"] == "GHOSTED")
 
-    if ghosted_count >= _LEAK_THRESHOLDS["critical_ghosted_count"] or total_at_risk >= _LEAK_THRESHOLDS["critical_at_risk_usd"]:
+    # Contradiction detection: warn if deals exist but no leaks detected
+    warning = None
+    if len(deals) > 0 and len(leaks) == 0:
+        warning = f"CONTRADICTION: {len(deals)} deals scanned but 0 leaks detected. Verify thresholds and deal data."
+
+    if (
+        ghosted_count >= _LEAK_THRESHOLDS["critical_ghosted_count"]
+        or total_at_risk >= _LEAK_THRESHOLDS["critical_at_risk_usd"]
+    ):
         severity = "critical"
         halt = True
-    elif len(leaks) >= _LEAK_THRESHOLDS["high_leak_count"] or total_at_risk >= _LEAK_THRESHOLDS["high_at_risk_usd"]:
+    elif (
+        len(leaks) >= _LEAK_THRESHOLDS["high_leak_count"]
+        or total_at_risk >= _LEAK_THRESHOLDS["high_at_risk_usd"]
+    ):
         severity = "high"
         halt = False
     elif len(leaks) >= 1:
@@ -435,6 +403,9 @@ def _detect_revenue_leaks(cycle: int, deals_json: str | None = None) -> dict:
     if not halt and cycle_num >= MAX_TOTAL_CYCLES:
         halt = True
 
+    if warning:
+        print(f"  ⚠️  {warning}")
+
     print(
         f"[detect_revenue_leaks] Cycle {cycle_num} — "
         f"{len(leaks)} leak(s) | severity={severity} | "
@@ -442,15 +413,18 @@ def _detect_revenue_leaks(cycle: int, deals_json: str | None = None) -> dict:
     )
 
     # IMPORTANT: halt must be returned as a string for edge condition evaluation
-    return {
+    result = {
         "cycle": cycle_num,
         "leak_count": len(leaks),
         "severity": severity,
         "total_at_risk": total_at_risk,
-            "halt": "true" if halt else "false",  # String, not boolean
+        "halt": "true" if halt else "false",  # String, not boolean
         # Serialised leaks for followup node — passes across node boundary
         "leaks_json": json.dumps(leaks),
     }
+    if warning:
+        result["warning"] = warning
+    return result
 
 
 def _build_telegram_alert(
@@ -463,8 +437,7 @@ def _build_telegram_alert(
     """
     Print a rich console report and build an HTML Telegram alert.
 
-    chat_id is read from TELEGRAM_CHAT_ID env var. Set it before running.
-    To find your chat ID: https://api.telegram.org/bot<TOKEN>/getUpdates
+    Chat ID is handled by the MCP telegram_send_message tool.
 
     Args:
         cycle:         Current monitoring cycle.
@@ -474,7 +447,6 @@ def _build_telegram_alert(
 
     Returns:
         html_message   — fully formatted HTML message ready to pass to telegram_send_message
-        chat_id        — Telegram chat ID from TELEGRAM_CHAT_ID env var
         cycle / severity / leak_count / total_at_risk — echoed for context
     """
     try:
@@ -574,13 +546,9 @@ def _build_telegram_alert(
 
     html_message = "\n".join(lines)
 
-    chat_id = _get_telegram_chat_id()
-    if not chat_id:
-        print(
-            "  ⚠️  TELEGRAM_CHAT_ID not set — call telegram_send_message will fail.\n"
-            "     Set TELEGRAM_CHAT_ID env var. To find your chat ID:\n"
-            "     https://api.telegram.org/bot<TOKEN>/getUpdates"
-        )
+    # NOTE: chat_id is no longer returned here. The MCP telegram_send_message
+    # tool handles chat_id through its own configuration. The notify node
+    # should pass a default chat_id or use the MCP tool's configured value.
 
     return {
         "cycle": cycle_num,
@@ -588,7 +556,6 @@ def _build_telegram_alert(
         "leak_count": leak_count_int,
         "total_at_risk": at_risk_int,
         "html_message": html_message,
-        "chat_id": chat_id,
     }
 
 
@@ -640,7 +607,7 @@ def _prepare_followup_emails(cycle: int, leaks_json: str | None = None) -> dict:
     skipped: list[str] = []
     seen_emails: set[str] = set()  # Deduplicate by email address
 
-    EMAIL_REGEX = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    EMAIL_REGEX = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
 
     for leak in ghosted:
         contact = str(leak.get("contact", "there"))
@@ -800,8 +767,7 @@ TOOLS: dict[str, Tool] = {
         name="build_telegram_alert",
         description=(
             "Print a rich console cycle report and build an HTML Telegram alert. "
-            "Returns html_message (formatted HTML) and chat_id (from TELEGRAM_CHAT_ID env). "
-            "Pass these to telegram_send_message MCP tool to actually send the alert. "
+            "Returns html_message (formatted HTML). Chat ID is handled by the MCP telegram_send_message tool. "
             "Call AFTER detect_revenue_leaks. "
             "Note: html_message may exceed 4096 chars — implement chunking when calling telegram_send_message."
         ),
@@ -829,7 +795,13 @@ TOOLS: dict[str, Tool] = {
                     ),
                 },
             },
-            "required": ["cycle", "leak_count", "severity", "total_at_risk", "leaks_json"],
+            "required": [
+                "cycle",
+                "leak_count",
+                "severity",
+                "total_at_risk",
+                "leaks_json",
+            ],
         },
     ),
     "prepare_followup_emails": Tool(
@@ -876,7 +848,7 @@ _TOOL_HANDLERS: dict[str, Any] = {
 def tool_executor(tool_use: ToolUse) -> ToolResult:
     """Dispatch a ToolUse to the correct handler and return a JSON ToolResult."""
     import traceback
-    
+
     handler = _TOOL_HANDLERS.get(tool_use.name)
     if handler is None:
         return ToolResult(
@@ -894,10 +866,12 @@ def tool_executor(tool_use: ToolUse) -> ToolResult:
         # Input validation or data structure error
         return ToolResult(
             tool_use_id=tool_use.id,
-            content=json.dumps({
-                "error": f"Invalid input to {tool_use.name}: {exc}",
-                "traceback": traceback.format_exc()
-            }),
+            content=json.dumps(
+                {
+                    "error": f"Invalid input to {tool_use.name}: {exc}",
+                    "traceback": traceback.format_exc(),
+                }
+            ),
             is_error=True,
         )
     except Exception as exc:
@@ -906,9 +880,11 @@ def tool_executor(tool_use: ToolUse) -> ToolResult:
         print(traceback.format_exc())
         return ToolResult(
             tool_use_id=tool_use.id,
-            content=json.dumps({
-                "error": f"Error in {tool_use.name}: {exc}",
-                "traceback": traceback.format_exc()
-            }),
+            content=json.dumps(
+                {
+                    "error": f"Error in {tool_use.name}: {exc}",
+                    "traceback": traceback.format_exc(),
+                }
+            ),
             is_error=True,
         )

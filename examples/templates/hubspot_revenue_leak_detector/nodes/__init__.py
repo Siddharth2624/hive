@@ -113,7 +113,14 @@ analyze_node = NodeSpec(
     client_facing=False,
     max_node_visits=0,
     input_keys=["cycle", "deals_json"],
-    output_keys=["cycle", "leak_count", "severity", "total_at_risk", "halt", "leaks_json"],
+    output_keys=[
+        "cycle",
+        "leak_count",
+        "severity",
+        "total_at_risk",
+        "halt",
+        "leaks_json",
+    ],
     tools=["detect_revenue_leaks"],
     system_prompt="""\
 You are executing ONE revenue leak analysis step.
@@ -149,7 +156,14 @@ notify_node = NodeSpec(
     node_type="event_loop",
     client_facing=False,
     max_node_visits=0,
-    input_keys=["cycle", "leak_count", "severity", "total_at_risk", "halt", "leaks_json"],
+    input_keys=[
+        "cycle",
+        "leak_count",
+        "severity",
+        "total_at_risk",
+        "halt",
+        "leaks_json",
+    ],
     output_keys=["cycle", "halt", "leaks_json"],
     tools=["build_telegram_alert", "telegram_send_message"],
     system_prompt="""\
@@ -163,14 +177,14 @@ STEP 1 — Build the alert:
     total_at_risk: the 'total_at_risk' from context
     leaks_json:    the 'leaks_json' from context (pass verbatim)
 
-  The result contains 'html_message' and 'chat_id'.
+  The result contains 'html_message'. Chat ID is handled by the MCP tool.
 
 STEP 2 — Send the alert via Telegram MCP with chunking:
   Telegram message limit is 4096 characters. You MUST implement chunking:
 
   If len(html_message) <= 4096:
     Call telegram_send_message ONCE with:
-      chat_id:    the EXACT 'chat_id' value returned by build_telegram_alert
+      chat_id:    your configured Telegram chat ID (from MCP settings)
       text:       the EXACT 'html_message' value (do NOT paraphrase or modify)
       parse_mode: "HTML"
 
@@ -178,7 +192,7 @@ STEP 2 — Send the alert via Telegram MCP with chunking:
     Split html_message into chunks of up to 4096 characters each.
     Split at NEWLINES (\\n) to keep content readable — try to keep lines intact.
     Call telegram_send_message ONCE for each chunk with:
-      chat_id:    the EXACT 'chat_id' value from build_telegram_alert
+      chat_id:    your configured Telegram chat ID (from MCP settings)
       text:       the chunk (do NOT paraphrase or modify)
       parse_mode: "HTML"
     Stop sending if any chunk fails (returns an error).
