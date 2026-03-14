@@ -26,6 +26,9 @@ Node flow:
 Required credentials (via env vars / MCP credential store):
   HUBSPOT_ACCESS_TOKEN  — HubSpot Private App token
   TELEGRAM_BOT_TOKEN    — Telegram bot token (for MCP telegram tools)
+  TELEGRAM_CHAT_ID      — Telegram chat ID (optional, for default chat target)
+                           Get it by chatting with your bot and checking:
+                           https://api.telegram.org/bot<TOKEN>/getUpdates
   Google OAuth          — Required for gmail_create_draft (sign in via hive open)
 """
 
@@ -50,7 +53,7 @@ def validate_credentials() -> tuple[bool, list[str]]:
     """Return (all_required_present, missing_list).
 
     Checks HubSpot (required) and Telegram bot token (required).
-    Does NOT check Google OAuth or Telegram chat_id as those are MCP-managed.
+    Telegram chat_id is optional but recommended for notify functionality.
 
     Returns:
         (True, []) if all required credentials are present

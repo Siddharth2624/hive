@@ -342,6 +342,18 @@ def register_tools(
             return token
         return os.getenv("TELEGRAM_BOT_TOKEN")
 
+    def _get_chat_id() -> str | None:
+        """Get default Telegram chat ID from credential manager or environment."""
+        if credentials is not None:
+            chat_id = credentials.get("telegram_chat_id")
+            if chat_id is not None and not isinstance(chat_id, str):
+                raise TypeError(
+                    f"Expected string from credentials.get('telegram_chat_id'), "
+                    f"got {type(chat_id).__name__}"
+                )
+            return chat_id
+        return os.getenv("TELEGRAM_CHAT_ID")
+
     def _get_client() -> _TelegramClient | dict[str, str]:
         """Get a Telegram client, or return an error dict if no credentials."""
         token = _get_token()
@@ -801,6 +813,31 @@ def register_tools(
             return {"error": "Telegram request timed out"}
         except httpx.RequestError as e:
             return {"error": f"Network error: {e}"}
+
+    @mcp.tool()
+    def telegram_get_chat_id() -> dict[str, Any]:
+        """
+        Get the default Telegram chat ID configured for this agent.
+
+        Returns the chat ID that should be used as the default target
+        for Telegram messages sent by this agent.
+
+        Returns:
+            Dict with 'chat_id' on success, or error dict on failure.
+            If no chat_id is configured, returns help message.
+        """
+        chat_id = _get_chat_id()
+        if not chat_id:
+            return {
+                "error": "No default chat ID configured",
+                "help": (
+                    "Set TELEGRAM_CHAT_ID environment variable or configure "
+                    "'telegram_chat_id' in credential store. To find your chat ID, "
+                    "send a message to your bot and check: "
+                    "https://api.telegram.org/bot<TOKEN>/getUpdates"
+                ),
+            }
+        return {"chat_id": chat_id}
 
     @mcp.tool()
     def telegram_set_chat_description(

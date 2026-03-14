@@ -165,7 +165,7 @@ notify_node = NodeSpec(
         "leaks_json",
     ],
     output_keys=["cycle", "halt", "leaks_json"],
-    tools=["build_telegram_alert", "telegram_send_message"],
+    tools=["build_telegram_alert", "telegram_get_chat_id", "telegram_send_message"],
     system_prompt="""\
 You are executing ONE revenue alert notification step.
 
@@ -177,14 +177,21 @@ STEP 1 — Build the alert:
     total_at_risk: the 'total_at_risk' from context
     leaks_json:    the 'leaks_json' from context (pass verbatim)
 
-  The result contains 'html_message'. Chat ID is handled by the MCP tool.
+  The result contains 'html_message'.
 
-STEP 2 — Send the alert via Telegram MCP with chunking:
+STEP 2 — Get default chat ID:
+  Call telegram_get_chat_id ONCE at the start to get the configured default chat ID.
+  If the result contains an 'error', the agent should log the error
+  and skip sending the Telegram message (but continue to STEP 3).
+  If successful, use the 'chat_id' value for sending messages.
+  The chat_id value is a string like "123456789" or "-1001234567890".
+
+STEP 3 — Send the alert via Telegram MCP with chunking:
   Telegram message limit is 4096 characters. You MUST implement chunking:
 
   If len(html_message) <= 4096:
     Call telegram_send_message ONCE with:
-      chat_id:    your configured Telegram chat ID (from MCP settings)
+      chat_id:    the 'chat_id' value from telegram_get_chat_id
       text:       the EXACT 'html_message' value (do NOT paraphrase or modify)
       parse_mode: "HTML"
 
@@ -192,10 +199,20 @@ STEP 2 — Send the alert via Telegram MCP with chunking:
     Split html_message into chunks of up to 4096 characters each.
     Split at NEWLINES (\\n) to keep content readable — try to keep lines intact.
     Call telegram_send_message ONCE for each chunk with:
-      chat_id:    your configured Telegram chat ID (from MCP settings)
+      chat_id:    the 'chat_id' value from telegram_get_chat_id
       text:       the chunk (do NOT paraphrase or modify)
       parse_mode: "HTML"
     Stop sending if any chunk fails (returns an error).
+
+STEP 4 — Set outputs (values as strings):
+  Call set_output:
+    "cycle"      → the 'cycle' from context (pass through unchanged)
+    "halt"       → the 'halt' from context (pass through as "true" or "false")
+    "leaks_json" → the 'leaks_json' from context (pass through verbatim)
+
+Stop immediately after all set_output calls.
+Do NOT call build_telegram_alert or telegram_get_chat_id more than once.
+Do NOT call hubspot tools, scan_pipeline, detect_revenue_leaks, or prepare_followup_emails.
 
 STEP 3 — Set outputs (values as strings):
   Call set_output:
