@@ -23,6 +23,7 @@ TELEGRAM_CREDENTIALS = {
             "telegram_get_chat_member_count",
             "telegram_send_video",
             "telegram_set_chat_description",
+            "telegram_get_chat_id",
         ],
         required=True,
         startup_required=False,

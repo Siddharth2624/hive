@@ -507,7 +507,17 @@ def register_tools(
         parsed_properties = _parse_list_param(properties)
         try:
             return client.search_objects(
-                "deals", query, parsed_properties or ["dealname", "amount", "dealstage", "hs_lastmodifieddate", "notes_last_contacted"], limit
+                "deals",
+                query,
+                parsed_properties
+                or [
+                    "dealname",
+                    "amount",
+                    "dealstage",
+                    "hs_lastmodifieddate",
+                    "notes_last_contacted",
+                ],
+                limit,
             )
         except httpx.TimeoutException:
             return {"error": "Request timed out"}
