@@ -235,11 +235,30 @@ class QueenPhaseState:
             self._filtered_independent_tools = list(self.independent_tools)
             return
         allowed = set(self.enabled_mcp_tools)
+        # If ``mcp_tool_names_all`` is empty, every tool falls through the
+        # "not in mcp_tool_names_all" branch below and the allowlist is
+        # silently ignored. That's a fail-open bug (the symptom: a
+        # role-restricted queen sees every MCP tool). Log a warning so the
+        # upstream cause is visible next time it happens.
+        if not self.mcp_tool_names_all:
+            logger.warning(
+                "rebuild_independent_filter: mcp_tool_names_all is empty but "
+                "allowlist has %d entries — allowlist cannot be applied. "
+                "Check that queen boot populated phase_state.mcp_tool_names_all.",
+                len(allowed),
+            )
         self._filtered_independent_tools = [
             t
             for t in self.independent_tools
             if t.name not in self.mcp_tool_names_all or t.name in allowed
         ]
+        logger.info(
+            "rebuild_independent_filter: allowlist=%d, mcp_names=%d, independent=%d -> filtered=%d",
+            len(allowed),
+            len(self.mcp_tool_names_all),
+            len(self.independent_tools),
+            len(self._filtered_independent_tools),
+        )
 
     def get_current_tools(self) -> list:
         """Return tools for the current phase."""

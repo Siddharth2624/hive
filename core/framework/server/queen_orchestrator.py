@@ -567,7 +567,9 @@ async def create_queen(
         srv: [{"name": name} for name in sorted(names)]
         for srv, names in mcp_server_tools_map.items()
     }
-    phase_state.enabled_mcp_tools = load_queen_tools_config(queen_dir.name, _boot_catalog)
+    # ``queen_dir`` is ``queens/<queen_id>/sessions/<session_id>``; the
+    # allowlist sidecar is keyed by queen_id, not session_id.
+    phase_state.enabled_mcp_tools = load_queen_tools_config(session.queen_name, _boot_catalog)
     phase_state.rebuild_independent_filter()
     if phase_state.enabled_mcp_tools is not None:
         total_mcp = len(phase_state.mcp_tool_names_all)
