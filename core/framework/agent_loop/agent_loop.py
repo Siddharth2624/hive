@@ -859,6 +859,7 @@ class AgentLoop(AgentProtocol):
                 _synthetic_names = {
                     "ask_user",
                     "escalate",
+                    "set_output",
                 }
                 synthetic = [t for t in tools if t.name in _synthetic_names]
                 tools.clear()
@@ -1445,6 +1446,7 @@ class AgentLoop(AgentProtocol):
                 for tc in logged_tool_calls
                 if tc.get("tool_name")
                 not in (
+                    "set_output",
                     "ask_user",
                     "escalate",
                 )
@@ -3478,6 +3480,7 @@ class AgentLoop(AgentProtocol):
                 if tc.tool_name not in (
                     "ask_user",
                     "escalate",
+                    "set_output",
                 ):
                     tool_entry = {
                         "tool_use_id": tc.tool_use_id,

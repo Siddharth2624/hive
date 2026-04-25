@@ -87,7 +87,7 @@ TOOLS = {
     "demo_log_action": Tool(
         name="demo_log_action",
         description=(
-            "Log a rebalance action in demo mode (writes to demo_rebalance_log.json). "
+            "Log a rebalance action in demo mode (writes to demo_rebalance_log.jsonl). "
             "Use only when crm_type is 'demo' instead of actual CRM logging."
         ),
         parameters={
@@ -113,7 +113,7 @@ def _get_data_dir() -> str:
     """Get the session-scoped data_dir from ToolRegistry execution context."""
     ctx = _execution_context.get()
     if not ctx or "data_dir" not in ctx:
-        raise RuntimeError("data_dir not set in execution context. Is the tool running inside a Orchestrator?")
+        raise RuntimeError("data_dir not set in execution context. Is the tool running inside an Orchestrator?")
     return ctx["data_dir"]
 
 
@@ -220,16 +220,7 @@ def _append_data(filename: str, data: dict) -> dict:
     try:
         with open(file_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(data, ensure_ascii=False) + "\n")
-
-        # Count total records
-        count = 0
-        if file_path.exists():
-            with open(file_path, "r") as f:
-                for line in f:
-                    if line.strip():
-                        count += 1
-
-        return {"success": True, "filename": filename, "total_records": count}
+        return {"success": True, "filename": filename}
     except Exception as e:
         return {"error": f"Error writing to file: {e}"}
 

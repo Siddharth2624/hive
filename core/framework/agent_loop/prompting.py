@@ -6,6 +6,7 @@ Extracted from the former orchestrator/prompting module.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -92,7 +93,10 @@ def build_system_prompt(spec: PromptSpec) -> str:
         input_lines: list[str] = ["INPUT DATA:"]
         for key, value in spec.input_data.items():
             if value is not None:
-                input_lines.append(f"  - {key}: {value}")
+                # Serialize value safely to prevent prompt injection
+                # JSON encoding escapes newlines, quotes, and special characters
+                rendered = json.dumps(value, ensure_ascii=False, default=str)
+                input_lines.append(f"  - {key}: {rendered}")
         if len(input_lines) > 1:  # Only add if there's actual data
             parts.append("\n".join(input_lines))
 
