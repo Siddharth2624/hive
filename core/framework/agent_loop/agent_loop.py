@@ -102,6 +102,7 @@ from framework.llm.stream_events import (
     TextDeltaEvent,
     ToolCallEvent,
 )
+from framework.orchestrator.node import NodeContext
 from framework.tracker.llm_debug_logger import log_llm_turn
 from framework.utils.task_registry import TaskRegistry
 
